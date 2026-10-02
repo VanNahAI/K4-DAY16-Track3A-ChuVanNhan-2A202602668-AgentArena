@@ -79,16 +79,34 @@ class Critic(Middleware):
     name = "critic"
 
     def after_agent(self, ctx, report):
-        # TODO (§2): khoảng 10-25 dòng.
-        #  1. Lấy report["claims"]; nếu rỗng hoặc không phải list thì thôi.
-        #  2. Với mỗi claim: nếu claim["text"] có trong ctx.observed_text
-        #     -> giữ nguyên (KHÔNG sửa chữ).
-        #  3. Nếu không: thử tách câu ghép (trường hợp (c) ở docstring).
-        #     Tách được -> giữ cả hai nửa, mỗi nửa gắn doc_id của tài liệu
-        #     thật sự chứa nó, và đặt report["abstain"] = True.
-        #  4. Không tách được -> đây là bịa: bỏ claim đi.
-        #  5. Nếu không còn claim nào: report["abstain"] = True,
-        #     claims = [], citations = [], và viết lại "answer" nói rõ là
-        #     không đủ căn cứ.
-        #  6. Cập nhật report["citations"] cho khớp với claims còn lại.
-        return report  # <- mặc định KHÔNG LÀM GÌ: agent vẫn chạy được
+        claims = report.get("claims")
+        if not isinstance(claims, list):
+            return report
+        observed = ctx.observed_text
+        kept = []
+        for claim in claims:
+            if not isinstance(claim, dict) or not isinstance(claim.get("text"), str):
+                continue
+            text = claim["text"]
+            if text and text in observed:
+                kept.append(claim)
+                continue
+            # ponytail: chỉ tách liên từ rõ ràng; cấu trúc khác cần model viết lại FINAL.
+            for split in (" và ",):
+                if split not in text or ctx.corpus is None:
+                    continue
+                left, right = text.split(split, 1)
+                sources = [next((d for d in ctx.corpus.docs if d.body in observed
+                                 and any(part in line for line in d.body.splitlines())), None)
+                           for part in (left, right)]
+                if all(sources) and sources[0].doc_id != sources[1].doc_id:
+                    kept.extend({"text": part, "doc_id": doc.doc_id}
+                                for part, doc in zip((left, right), sources))
+                    report["abstain"] = True
+                    break
+        report["claims"] = kept
+        report["citations"] = sorted({c["doc_id"] for c in kept if isinstance(c.get("doc_id"), str)})
+        if not kept:
+            report["abstain"] = True
+            report["answer"] = "Không đủ căn cứ từ tài liệu đã đọc để trả lời."
+        return report

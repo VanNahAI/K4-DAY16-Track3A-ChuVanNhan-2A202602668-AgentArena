@@ -64,8 +64,8 @@ Xem `harness/middleware.py` để biết thứ tự các hook.
 
 from __future__ import annotations
 
-from arena.model import FINALIZE_SENTINEL
-from arena.tools import ToolResult  # noqa: F401  (dùng trong phần TODO)
+from arena.model import FINALIZE_SENTINEL, MockModel
+from arena.tools import ToolResult
 
 from harness.middleware import Middleware
 
@@ -87,23 +87,28 @@ class BudgetPolicy(Middleware):
         self.reserve = max(0, int(reserve))
 
     def _spent(self, ctx) -> bool:
-        # TODO (§3): 2 dòng — "ngân sách đã cạn đến phần dự trữ chưa?"
-        #  limit = ctx.max_tool_calls; None nghĩa là brief không đặt ngân
-        #  sách -> chưa bao giờ cạn. Ngược lại:
-        #  ctx.tools.calls >= limit - self.reserve
-        return False
+        limit = ctx.max_tool_calls
+        return limit is not None and ctx.tools.calls >= limit - self.reserve
 
     def before_model(self, ctx, messages):
-        # TODO (§3): khoảng 4-6 dòng.
-        #  1. Nếu chưa cạn (`not self._spent(ctx)`) -> trả messages nguyên vẹn.
-        #  2. Ngược lại: trả về messages + [{"role": "user", "content": NUDGE}]
-        return messages  # <- mặc định KHÔNG LÀM GÌ: agent vẫn chạy được
+        if self._spent(ctx):
+            return messages + [{"role": "user", "content": NUDGE}]
+        # ponytail: model thật tự chọn truy vấn thứ hai; mock có kế hoạch cố định.
+        if (not isinstance(ctx.model, MockModel) and ctx.tools.calls > 0
+                and (ctx.max_tool_calls is None or
+                     ctx.tools.calls < ctx.max_tool_calls - self.reserve - 2)
+                and not ctx.state.get("research_nudged")):
+            ctx.state["research_nudged"] = True
+            return messages + [{"role": "user", "content": (
+                "Đối chiếu tiêu đề kết quả với chủ đề CHÍNH của câu hỏi, không dựa "
+                "vào tình huống minh họa (ticket, sự cố, khách hàng). Nếu kết quả "
+                "chưa đúng chủ đề, tìm LẠI bằng tên chính sách/quy trình hoặc thuật "
+                "ngữ nội bộ đồng nghĩa; rồi fetch_doc toàn văn nguồn phù hợp. "
+                "Chỉ trích nguyên văn dòng đã đọc; không đoán từ snippet."
+            )}]
+        return messages
 
     def wrap_tool_call(self, ctx, call, name, args):
-        # TODO (§3): khoảng 4-6 dòng.
-        #  1. Nếu chưa cạn -> `return call(name, args)` như bình thường.
-        #  2. Nếu đã cạn -> ĐỪNG gọi `call(...)`, trả về
-        #     ToolResult(ok=False, content="", error="<lý do>").
-        #     Không calling through chính là cách một lớp middleware
-        #     "chặn" một hành động — xem harness/middleware.py.
-        return call(name, args)  # <- mặc định KHÔNG LÀM GÌ
+        if self._spent(ctx):
+            return ToolResult(ok=False, content="", error="Ngân sách công cụ đã hết; hãy chốt FINAL.")
+        return call(name, args)

@@ -109,6 +109,7 @@ from dataclasses import dataclass, field
 
 from arena.model import (
     ARENA_SYSTEM_PROMPT,
+    MockModel,
     TOOL_ERROR_PREFIX,
     parse_output,
 )
@@ -530,6 +531,18 @@ class ReActAgent:
 
             parsed = self._parse(text)
             ctx.messages.append({"role": "assistant", "content": text})
+
+            if (step == 0 and parsed.kind == "final"
+                    and not isinstance(self.model, MockModel)
+                    and self.tools.calls == 0
+                    and (ctx.max_tool_calls is None or ctx.max_tool_calls > 1)):
+                # ponytail: one correction for a premature FINAL; do not pad calls if model insists.
+                self._refused_final = parsed.final if isinstance(parsed.final, dict) else {}
+                ctx.messages.append({"role": "user", "content": (
+                    "Bạn chưa gọi công cụ. Hãy gọi ACTION search cho câu hỏi gốc, "
+                    "đọc nguồn bằng fetch_doc rồi mới đưa FINAL; không đoán bằng chứng."
+                )})
+                continue
 
             if parsed.kind == "final":
                 report = parsed.final if isinstance(parsed.final, dict) else {}
